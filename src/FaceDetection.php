@@ -326,8 +326,50 @@ class FaceDetection
     }
 
     /**
+     * Helper para extrair o valor (int) de um canal de cor (Intervention v3).
+     * Aceita Channel objects, ints ou strings numéricas.
+     *
+     * @param mixed $channel
+     * @return int
+     */
+    private function channelVal($channel): int
+    {
+        // Objeto de canal com método value()
+        if (is_object($channel)) {
+            if (method_exists($channel, 'value')) {
+                return (int) $channel->value();
+            }
+            // Algumas implementações podem expor toInteger()/toInt()
+            if (method_exists($channel, 'toInteger')) {
+                return (int) $channel->toInteger();
+            }
+            if (method_exists($channel, 'toInt')) {
+                return (int) $channel->toInt();
+            }
+            // Fallback bruto: tenta converter stringável
+            if (method_exists($channel, '__toString')) {
+                $v = (string) $channel;
+                return (int) (is_numeric($v) ? $v : 0);
+            }
+            return 0;
+        }
+
+        // Número puro
+        if (is_int($channel) || is_float($channel)) {
+            return (int) $channel;
+        }
+
+        // String numérica
+        if (is_string($channel) && is_numeric($channel)) {
+            return (int) $channel;
+        }
+
+        return 0;
+    }
+
+    /**
      * Integrais da imagem (soma e soma dos quadrados).
-     * Compatível com pickColor() da v3 (sem parâmetro de formato).
+     * Compatível com pickColor() da v3.
      *
      * @param ImageInterface $image
      * @param int $image_width
@@ -353,21 +395,37 @@ class FaceDetection
             $rowsum2 = 0;
 
             for ($j = 1; $j < $ii_w - 1; $j++) {
-                // v3: pickColor() retorna um objeto de cor; lidamos com array/obj para robustez
+                // v3: pickColor() retorna um ColorInterface (RGB por padrão)
                 $px = $image->pickColor($j, $i);
 
+                $red = $green = $blue = 0;
+
                 if (is_object($px)) {
-                    // Métodos típicos na Color class
-                    $red   = (int) (method_exists($px, 'red')   ? $px->red()   : 0);
-                    $green = (int) (method_exists($px, 'green') ? $px->green() : 0);
-                    $blue  = (int) (method_exists($px, 'blue')  ? $px->blue()  : 0);
+                    // Preferimos coletar via canais
+                    if (method_exists($px, 'red')) {
+                        $red = $this->channelVal($px->red());
+                    }
+                    if (method_exists($px, 'green')) {
+                        $green = $this->channelVal($px->green());
+                    }
+                    if (method_exists($px, 'blue')) {
+                        $blue = $this->channelVal($px->blue());
+                    }
+
+                    // Se por alguma razão não populou, tenta via toArray()
+                    if (($red|$green|$blue) === 0 && method_exists($px, 'toArray')) {
+                        $arr = $px->toArray();
+                        if (is_array($arr) && count($arr) >= 3) {
+                            $red   = (int) ($arr[0] ?? 0);
+                            $green = (int) ($arr[1] ?? 0);
+                            $blue  = (int) ($arr[2] ?? 0);
+                        }
+                    }
                 } elseif (is_array($px) && count($px) >= 3) {
+                    // Alguns drivers podem devolver array [r,g,b,(a)]
                     $red   = (int) $px[0];
                     $green = (int) $px[1];
                     $blue  = (int) $px[2];
-                } else {
-                    // Fallback conservador
-                    $red = $green = $blue = 0;
                 }
 
                 $grey = (int) floor(0.2989 * $red + 0.587 * $green + 0.114 * $blue);
