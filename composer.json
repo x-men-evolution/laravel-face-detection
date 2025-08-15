@@ -8,7 +8,7 @@
   ],
   "authors": [
     {
-      "name": "Arhey"
+      "name": "EvolutionTech"
     },
     {
       "name": "Papai"
@@ -24,22 +24,22 @@
   },
   "autoload": {
     "psr-4": {
-      "Arhey\\FaceDetection\\": "src"
+      "EvolutionTech\\FaceDetection\\": "src"
     }
   },
   "autoload-dev": {
     "psr-4": {
-      "Arhey\\FaceDetection\\Tests\\": "tests"
+      "EvolutionTech\\FaceDetection\\Tests\\": "tests"
     }
   },
   "minimum-stability": "stable",
   "extra": {
     "laravel": {
       "providers": [
-        "Arhey\\FaceDetection\\FaceDetectionServiceProvider"
+        "EvolutionTech\\FaceDetection\\FaceDetectionServiceProvider"
       ],
       "aliases": {
-        "FaceDetection": "Arhey\\FaceDetection\\Facades\\FaceDetection"
+        "FaceDetection": "EvolutionTech\\FaceDetection\\Facades\\FaceDetection"
       }
     }
   }

@@ -62,12 +62,12 @@ Se o autodiscovery estiver desativado, registre no `config/app.php`:
 ```php
 'providers' => [
     // ...
-    Arhey\FaceDetection\FaceDetectionServiceProvider::class,
+    EvolutionTech\FaceDetection\FaceDetectionServiceProvider::class,
 ],
 
 'aliases' => [
     // ...
-    'FaceDetection' => Arhey\FaceDetection\Facades\FaceDetection::class,
+    'FaceDetection' => EvolutionTech\FaceDetection\Facades\FaceDetection::class,
 ],
 ```
 
@@ -76,7 +76,7 @@ Se o autodiscovery estiver desativado, registre no `config/app.php`:
 ## Uso Básico
 
 ```php
-use Arhey\FaceDetection\Facades\FaceDetection;
+use EvolutionTech\FaceDetection\Facades\FaceDetection;
 
 // Caminho de arquivo OU data-uri/base64 ('data:image/jpeg;base64,....')
 $face = FaceDetection::extract('path/to/image.jpg');

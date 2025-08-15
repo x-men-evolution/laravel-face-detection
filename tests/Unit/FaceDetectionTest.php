@@ -1,9 +1,9 @@
 <?php
 
-namespace Arhey\FaceDetection\Tests;
+namespace EvolutionTech\FaceDetection\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Arhey\FaceDetection\FaceDetection;
+use EvolutionTech\FaceDetection\FaceDetection;
 use Intervention\Image\ImageManager;
 
 class FaceDetectionTest extends TestCase 

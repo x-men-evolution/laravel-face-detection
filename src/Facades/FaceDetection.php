@@ -1,6 +1,6 @@
 <?php
 
-namespace Arhey\FaceDetection\Facades;
+namespace EvolutionTech\FaceDetection\Facades;
 
 use Illuminate\Support\Facades\Facade;
 

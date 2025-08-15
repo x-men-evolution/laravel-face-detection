@@ -1,6 +1,6 @@
 <?php
 
-namespace Arhey\FaceDetection;
+namespace EvolutionTech\FaceDetection;
 
 use Illuminate\Support\ServiceProvider;
 
@@ -21,7 +21,7 @@ class FaceDetectionServiceProvider extends ServiceProvider
    */
   public function register()
   {
-    $this->app->bind('FaceDetection', '\Arhey\FaceDetection\FaceDetection');
+    $this->app->bind('FaceDetection', '\EvolutionTech\FaceDetection\FaceDetection');
 
   }
 
