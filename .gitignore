@@ -5,3 +5,4 @@ composer.lock
 .phpunit*
 /demo
 .phpunit.*
+.code-worspace
