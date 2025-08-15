@@ -57,7 +57,7 @@ class FaceDetection
      * Extrai a face principal e calcula bounds.
      * Aceita caminho de arquivo ou base64 (com/sem cabeçalho data-uri).
      *
-     * - Aplica oriantação por EXIF (orient()).
+     * - Aplica orientação por EXIF (orient()).
      * - Se não encontrar, tenta novamente com rotações 90°, 270° e 180°.
      *
      * @param string $file
@@ -78,7 +78,7 @@ class FaceDetection
         $finalImage  = null;
 
         foreach ($angles as $angle) {
-            $img = $angle === 0 ? $base->clone() : $base->clone()->rotate($angle);
+            $img = $angle === 0 ? (clone $base) : (clone $base)->rotate($angle);
             $bounds = $this->detectBoundsFromImage($img);
             if ($bounds && $bounds['w'] > 0) {
                 $foundBounds = $bounds;
@@ -125,7 +125,7 @@ class FaceDetection
             'height' => $this->bounds['w'] + $this->padding_height,
         ];
 
-        $img = $this->image->clone()->crop(
+        $img = (clone $this->image)->crop(
             (int) $to_crop['width'],
             (int) $to_crop['height'],
             (int) $to_crop['x'],
@@ -168,7 +168,7 @@ class FaceDetection
             }
         }
 
-        $img  = $this->image->clone();
+        $img  = (clone $this->image);
         $imgW = $img->width();
         $imgH = $img->height();
 
@@ -249,7 +249,7 @@ class FaceDetection
         $ratio  = ($ratio > 1) ? $ratio : 0;
 
         if ($ratio > 1) {
-            $temp = $img->clone()->resize(
+            $temp = (clone $img)->resize(
                 (int) round($im_width / $ratio),
                 (int) round($im_height / $ratio)
             );
@@ -323,7 +323,7 @@ class FaceDetection
             'ii'     => $iis['ii'],
             'ii2'    => $iis['ii2'],
         ];
-        }
+    }
 
     /**
      * Integrais da imagem (soma e soma dos quadrados).
