@@ -37,9 +37,9 @@ class FaceDetection
      * Expansão automática (lado do quadrado) relativa à face: lado <= max(w,h) * cap
      * e parâmetros de “headroom” para não cortar topo/queixo.
      */
-    private float $auto_expand_cap       = 1.6; // até +60% no lado, se couber
-    private float $auto_top_margin_factor= 0.35; // +35% do lado da face acima do topo da face
-    private float $auto_vertical_bias    = 0.15; // desloca centro para cima em 15% do lado da face
+    private float $auto_expand_cap       = 1.9; // até +60% no lado, se couber
+    private float $auto_top_margin_factor= 0.50; // +35% do lado da face acima do topo da face
+    private float $auto_vertical_bias    = 0.22; // desloca centro para cima em 15% do lado da face
 
     public function __construct()
     {
