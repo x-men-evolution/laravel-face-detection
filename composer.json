@@ -2,8 +2,18 @@
   "name": "x-men-evolution/laravel-face-detection",
   "description": "Um pacote Laravel para detecção de faces e corte em imagens.",
   "license": "MIT",
-  "keywords": ["Laravel", "Face Detection"],
-  "authors": [{"name": "Arhey"}, {"name": "Papai"}],
+  "keywords": [
+    "Laravel",
+    "Face Detection"
+  ],
+  "authors": [
+    {
+      "name": "Arhey"
+    },
+    {
+      "name": "Papai"
+    }
+  ],
   "require": {
     "php": "^8.1",
     "illuminate/support": "^10.0|^11.0",
@@ -22,5 +32,15 @@
       "Arhey\\FaceDetection\\Tests\\": "tests"
     }
   },
-  "minimum-stability": "stable"
+  "minimum-stability": "stable",
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Arhey\\FaceDetection\\FaceDetectionServiceProvider"
+      ],
+      "aliases": {
+        "FaceDetection": "Arhey\\FaceDetection\\Facades\\FaceDetection"
+      }
+    }
+  }
 }
