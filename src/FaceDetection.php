@@ -8,6 +8,7 @@ use Intervention\Image\Drivers\Imagick\Driver as ImagickDriver;
 use Intervention\Image\Encoders\JpegEncoder;
 use Intervention\Image\Encoders\PngEncoder;
 use Intervention\Image\Encoders\WebpEncoder;
+use Intervention\Image\Interfaces\ImageInterface;
 
 class FaceDetection
 {
@@ -20,7 +21,7 @@ class FaceDetection
     /** @var ImageManager */
     public $driver;
 
-    /** @var \Intervention\Image\Interfaces\ImageInterface */
+    /** @var ImageInterface */
     private $image;
 
     /** @var int */
@@ -34,95 +35,64 @@ class FaceDetection
 
     public function __construct()
     {
-        // Driver da Intervention v3: precisa ser DriverInterface (GD/Imagick) ou string ('gd'|'imagick')
         $this->driver = $this->defaultDriver();
 
-        // Carrega paddings de configuração (com defaults seguros)
         if (function_exists('config')) {
             $this->padding_width  = (int) (config('facedetection.padding_width', 0));
             $this->padding_height = (int) (config('facedetection.padding_height', 0));
         }
 
-        // Carrega o modelo de detecção (haar) via caminho relativo seguro
         $detection_file = __DIR__ . '/Data/face.dat';
-        if (is_file($detection_file)) {
-            $data = file_get_contents($detection_file);
-            if ($data === false) {
-                throw new \Exception("Couldn't read detection data");
-            }
-            $this->detection_data = unserialize($data);
-        } else {
+        if (!is_file($detection_file)) {
             throw new \Exception("Couldn't load detection data at {$detection_file}");
         }
+        $data = file_get_contents($detection_file);
+        if ($data === false) {
+            throw new \Exception("Couldn't read detection data");
+        }
+        $this->detection_data = unserialize($data);
     }
 
     /**
      * Extrai a face principal e calcula bounds.
      * Aceita caminho de arquivo ou base64 (com/sem cabeçalho data-uri).
      *
+     * - Aplica oriantação por EXIF (orient()).
+     * - Se não encontrar, tenta novamente com rotações 90°, 270° e 180°.
+     *
      * @param string $file
      * @return $this
      */
     public function extract($file)
     {
-        // Leitura + correção EXIF
-        $this->image = $this->driver
-            ->read($this->normalizeInput($file))
-            ->orientate();
+        $base = $this->driver->read($this->normalizeInput($file));
 
-        $im_width  = $this->image->width();
-        $im_height = $this->image->height();
-
-        // Redução opcional para acelerar detecção (alvo ~320x240) — apenas se for maior
-        $ratioW = $im_width  / 320.0;
-        $ratioH = $im_height / 240.0;
-        $ratio  = max($ratioW, $ratioH);
-        if ($ratio <= 1) {
-            $ratio = 0; // não reduz se já for pequeno
+        // Em v3 a auto-orientação é padrão, mas garantimos explicitamente:
+        if (method_exists($base, 'orient')) {
+            $base = $base->orient();
         }
 
-        if ($ratio > 1) {
-            // Clona, redimensiona para detecção e converte bounds de volta
-            $temp = $this->image->clone();
-            $temp->resize(
-                (int) round($im_width / $ratio),
-                (int) round($im_height / $ratio)
-            );
+        // Tenta nas rotações: 0°, 90°, 270°, 180°
+        $angles = [0, 90, 270, 180];
+        $foundBounds = null;
+        $finalImage  = null;
 
-            $stats       = $this->get_img_stats($temp);
-            $this->bounds = $this->do_detect_greedy_big_to_small(
-                $stats['ii'],
-                $stats['ii2'],
-                $stats['width'],
-                $stats['height']
-            );
-
-            if ($this->bounds) {
-                $this->bounds['h'] = $this->bounds['w'];
-                if ($this->bounds['w'] > 0) {
-                    // Converte de volta para as dimensões originais
-                    $this->bounds['x'] *= $ratio;
-                    $this->bounds['y'] *= $ratio;
-                    $this->bounds['w'] *= $ratio;
-                    $this->bounds['h'] *= $ratio;
-                }
+        foreach ($angles as $angle) {
+            $img = $angle === 0 ? $base->clone() : $base->clone()->rotate($angle);
+            $bounds = $this->detectBoundsFromImage($img);
+            if ($bounds && $bounds['w'] > 0) {
+                $foundBounds = $bounds;
+                $finalImage  = $img;
+                break;
             }
-        } else {
-            $stats        = $this->get_img_stats($this->image);
-            $this->bounds = $this->do_detect_greedy_big_to_small(
-                $stats['ii'],
-                $stats['ii2'],
-                $stats['width'],
-                $stats['height']
-            );
         }
+
+        $this->image  = $finalImage ?: $base;
+        $this->bounds = $foundBounds;
 
         if ($this->bounds) {
-            if ($this->bounds['w'] > 0) {
-                $this->found = true;
-            }
-
-            // Arredonda para 1 casa decimal como o original
+            $this->found = true;
+            // Arredonda como no original
             $this->bounds['x'] = round($this->bounds['x'], 1);
             $this->bounds['y'] = round($this->bounds['y'], 1);
             $this->bounds['w'] = round($this->bounds['w'], 1);
@@ -134,7 +104,6 @@ class FaceDetection
 
     /**
      * Salva o recorte padrão (sem margem adicional além do padding configurado).
-     * Mantém compat com a API original.
      *
      * @param string $file_name
      * @throws \Exception
@@ -145,7 +114,6 @@ class FaceDetection
         if (file_exists($file_name)) {
             throw new \Exception("Save File Already Exists ($file_name)");
         }
-
         if (!$this->found || !$this->bounds) {
             throw new \Exception("No face bounds available to save");
         }
@@ -157,20 +125,15 @@ class FaceDetection
             'height' => $this->bounds['w'] + $this->padding_height,
         ];
 
-        // Clona a imagem original
-        $cropped_image = $this->image->clone();
-
-        // Crop
-        $cropped_image->crop(
+        $img = $this->image->clone()->crop(
             (int) $to_crop['width'],
             (int) $to_crop['height'],
             (int) $to_crop['x'],
             (int) $to_crop['y']
         );
 
-        // Força JPG (compat com v2: $quality=100, 'jpg')
-        $cropped_image = $cropped_image->encode(new JpegEncoder(quality: 100));
-        $cropped_image->save($file_name);
+        $img = $img->encode(new JpegEncoder(quality: 100));
+        $img->save($file_name);
     }
 
     /**
@@ -205,7 +168,6 @@ class FaceDetection
             }
         }
 
-        // Trabalha sempre na imagem já carregada + orientada
         $img  = $this->image->clone();
         $imgW = $img->width();
         $imgH = $img->height();
@@ -224,19 +186,18 @@ class FaceDetection
         $x2 = $x + $w + $expandW;
         $y2 = $y + $h + $expandH;
 
-        // 2) Quadrado (lado = maior dimensão)
+        // 2) Quadrado
         $cropW = $x2 - $x1;
         $cropH = $y2 - $y1;
         $side  = max($cropW, $cropH);
 
-        // Centro do recorte
         $cx = ($x1 + $x2) / 2.0;
         $cy = ($y1 + $y2) / 2.0;
 
         $sqX1 = $cx - $side / 2.0;
         $sqY1 = $cy - $side / 2.0;
 
-        // 3) Clamping nas bordas da imagem
+        // 3) Clamping nas bordas
         if ($sqX1 < 0) $sqX1 = 0;
         if ($sqY1 < 0) $sqY1 = 0;
         if ($sqX1 + $side > $imgW) $sqX1 = max(0, $imgW - $side);
@@ -272,16 +233,69 @@ class FaceDetection
     }
 
     /**
+     * Detecta bounds a partir de uma imagem (com downscale para acelerar).
+     * @param ImageInterface $img
+     * @return array{x:float,y:float,w:float,h:float}|null
+     */
+    private function detectBoundsFromImage(ImageInterface $img): ?array
+    {
+        $im_width  = $img->width();
+        $im_height = $img->height();
+
+        // Reduz para ~320x240 se maior (acelera)
+        $ratioW = $im_width  / 320.0;
+        $ratioH = $im_height / 240.0;
+        $ratio  = max($ratioW, $ratioH);
+        $ratio  = ($ratio > 1) ? $ratio : 0;
+
+        if ($ratio > 1) {
+            $temp = $img->clone()->resize(
+                (int) round($im_width / $ratio),
+                (int) round($im_height / $ratio)
+            );
+
+            $stats  = $this->get_img_stats($temp);
+            $bounds = $this->do_detect_greedy_big_to_small(
+                $stats['ii'],
+                $stats['ii2'],
+                $stats['width'],
+                $stats['height']
+            );
+
+            if ($bounds) {
+                $bounds['h'] = $bounds['w'];
+                if ($bounds['w'] > 0) {
+                    $bounds['x'] *= $ratio;
+                    $bounds['y'] *= $ratio;
+                    $bounds['w'] *= $ratio;
+                    $bounds['h'] *= $ratio;
+                }
+            }
+            return $bounds;
+        }
+
+        $stats  = $this->get_img_stats($img);
+        $bounds = $this->do_detect_greedy_big_to_small(
+            $stats['ii'],
+            $stats['ii2'],
+            $stats['width'],
+            $stats['height']
+        );
+
+        if ($bounds) {
+            $bounds['h'] = $bounds['w'];
+        }
+        return $bounds;
+    }
+
+    /**
      * Cria o ImageManager conforme config (facedetection.driver).
      * v3 exige DriverInterface OU 'gd'/'imagick'.
-     *
-     * @return ImageManager
      */
-    protected function defaultDriver()
+    protected function defaultDriver(): ImageManager
     {
         $driverKey = 'gd';
         if (function_exists('config')) {
-            // mantém nome do config original do pacote
             $driverKey = (string) config('facedetection.driver', 'gd');
         }
         $driverKey = strtolower($driverKey);
@@ -293,38 +307,39 @@ class FaceDetection
     }
 
     /**
-     * Constrói integrais da imagem (usadas no detector).
+     * Integrais e metadados da imagem.
      *
-     * @param \Intervention\Image\Interfaces\ImageInterface $image
+     * @param ImageInterface $image
      * @return array{width:int,height:int,ii:array,ii2:array}
      */
-    protected function get_img_stats($image)
+    protected function get_img_stats(ImageInterface $image)
     {
         $image_width  = $image->width();
         $image_height = $image->height();
         $iis = $this->compute_ii($image, $image_width, $image_height);
-        return array(
+        return [
             'width'  => $image_width,
             'height' => $image_height,
             'ii'     => $iis['ii'],
             'ii2'    => $iis['ii2'],
-        );
-    }
+        ];
+        }
 
     /**
      * Integrais da imagem (soma e soma dos quadrados).
+     * Compatível com pickColor() da v3 (sem parâmetro de formato).
      *
-     * @param \Intervention\Image\Interfaces\ImageInterface $image
+     * @param ImageInterface $image
      * @param int $image_width
      * @param int $image_height
      * @return array{ii: array, ii2: array}
      */
-    protected function compute_ii($image, $image_width, $image_height)
+    protected function compute_ii(ImageInterface $image, int $image_width, int $image_height)
     {
         $ii_w = $image_width + 1;
         $ii_h = $image_height + 1;
-        $ii   = array();
-        $ii2  = array();
+        $ii   = [];
+        $ii2  = [];
 
         for ($i = 0; $i < $ii_w; $i++) {
             $ii[$i]  = 0;
@@ -336,13 +351,26 @@ class FaceDetection
             $ii2[$i * $ii_w] = 0;
             $rowsum  = 0;
             $rowsum2 = 0;
+
             for ($j = 1; $j < $ii_w - 1; $j++) {
-                // Mantém a mesma estratégia do pacote original (formato int)
-                $rgb   = $image->pickColor($j, $i, 'int');
-                $red   = ($rgb >> 16) & 0xFF;
-                $green = ($rgb >> 8) & 0xFF;
-                $blue  = $rgb & 0xFF;
-                $grey  = (int) floor(0.2989 * $red + 0.587 * $green + 0.114 * $blue);
+                // v3: pickColor() retorna um objeto de cor; lidamos com array/obj para robustez
+                $px = $image->pickColor($j, $i);
+
+                if (is_object($px)) {
+                    // Métodos típicos na Color class
+                    $red   = (int) (method_exists($px, 'red')   ? $px->red()   : 0);
+                    $green = (int) (method_exists($px, 'green') ? $px->green() : 0);
+                    $blue  = (int) (method_exists($px, 'blue')  ? $px->blue()  : 0);
+                } elseif (is_array($px) && count($px) >= 3) {
+                    $red   = (int) $px[0];
+                    $green = (int) $px[1];
+                    $blue  = (int) $px[2];
+                } else {
+                    // Fallback conservador
+                    $red = $green = $blue = 0;
+                }
+
+                $grey = (int) floor(0.2989 * $red + 0.587 * $green + 0.114 * $blue);
 
                 $rowsum  += $grey;
                 $rowsum2 += $grey * $grey;
@@ -354,7 +382,8 @@ class FaceDetection
                 $ii2[$ii_this] = $ii2[$ii_above] + $rowsum2;
             }
         }
-        return array('ii' => $ii, 'ii2' => $ii2);
+
+        return ['ii' => $ii, 'ii2' => $ii2];
     }
 
     /**
@@ -368,23 +397,23 @@ class FaceDetection
      */
     protected function do_detect_greedy_big_to_small($ii, $ii2, $width, $height)
     {
-        $s_w         = $width / 20.0;
-        $s_h         = $height / 20.0;
-        $start_scale = $s_h < $s_w ? $s_h : $s_w;
+        $s_w          = $width / 20.0;
+        $s_h          = $height / 20.0;
+        $start_scale  = $s_h < $s_w ? $s_h : $s_w;
         $scale_update = 1 / 1.2;
 
         for ($scale = $start_scale; $scale > 1; $scale *= $scale_update) {
-            $w     = floor(20 * $scale);
-            $endx  = $width - $w - 1;
-            $endy  = $height - $w - 1;
-            $step  = floor(max($scale, 2));
+            $w       = (int) floor(20 * $scale);
+            $endx    = $width - $w - 1;
+            $endy    = $height - $w - 1;
+            $step    = (int) floor(max($scale, 2));
             $inv_area = 1 / ($w * $w);
 
             for ($y = 0; $y < $endy; $y += $step) {
                 for ($x = 0; $x < $endx; $x += $step) {
                     $passed = $this->detect_on_sub_image($x, $y, $scale, $ii, $ii2, $w, $width + 1, $inv_area);
                     if ($passed) {
-                        return array('x' => (float) $x, 'y' => (float) $y, 'w' => (float) $w);
+                        return ['x' => (float) $x, 'y' => (float) $y, 'w' => (float) $w];
                     }
                 }
             }
@@ -401,7 +430,6 @@ class FaceDetection
         $vnorm = ($ii2[($y + $w) * $iiw + $x + $w] + $ii2[$y * $iiw + $x] - $ii2[($y + $w) * $iiw + $x] - $ii2[$y * $iiw + $x + $w]) * $inv_area - ($mean * $mean);
         $vnorm = $vnorm > 1 ? sqrt($vnorm) : 1;
 
-        $passed = true;
         for ($i_stage = 0; $i_stage < count($this->detection_data); $i_stage++) {
             $stage        = $this->detection_data[$i_stage];
             $trees        = $stage[0];
@@ -414,13 +442,13 @@ class FaceDetection
                 $tree_sum     = 0;
 
                 while ($current_node != null) {
-                    $vals       = $current_node[0];
+                    $vals        = $current_node[0];
                     $node_thresh = $vals[0];
-                    $leftval    = $vals[1];
-                    $rightval   = $vals[2];
-                    $leftidx    = $vals[3];
-                    $rightidx   = $vals[4];
-                    $rects      = $current_node[1];
+                    $leftval     = $vals[1];
+                    $rightval    = $vals[2];
+                    $leftidx     = $vals[3];
+                    $rightidx    = $vals[4];
+                    $rects       = $current_node[1];
 
                     $rect_sum = 0;
                     for ($i_rect = 0; $i_rect < count($rects); $i_rect++) {
@@ -484,12 +512,12 @@ class FaceDetection
         }
 
         // Provável base64 "cru"? (tolerante a quebras de linha)
-        $maybeBase64 = preg_replace('/\s+/', '', $input);
+        $maybeBase64 = preg_replace('/\s+/', '', $input ?? '');
         if ($maybeBase64 !== null && preg_match('/^[A-Za-z0-9+\/=]+$/', $maybeBase64)) {
             return 'data:image/jpeg;base64,' . $maybeBase64;
         }
 
-        // Fallback: retorna como veio
+        // Fallback
         return $input;
     }
 }
