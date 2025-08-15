@@ -3,7 +3,7 @@
   "description": "Um pacote Laravel para detecção de faces e corte em imagens.",
   "license": "MIT",
   "keywords": ["Laravel", "Face Detection"],
-  "authors": [{"name": "Arhey"}, {"name": "Seu Nome"}],
+  "authors": [{"name": "Arhey"}, {"name": "Papai"}],
   "require": {
     "php": "^8.1",
     "illuminate/support": "^10.0|^11.0",
