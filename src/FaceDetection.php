@@ -67,7 +67,7 @@ class FaceDetection
     {
         $base = $this->driver->read($this->normalizeInput($file));
 
-        // Em v3 a auto-orientação é padrão, mas garantimos explicitamente:
+        // Em v3 a auto-orientação costuma ocorrer, mas garantimos explicitamente
         if (method_exists($base, 'orient')) {
             $base = $base->orient();
         }
@@ -137,6 +137,43 @@ class FaceDetection
     }
 
     /**
+     * Retorna o recorte padrão (como save()), porém em BASE64 (Data URI).
+     * Útil para pré-visualizar sem salvar em disco.
+     *
+     * @param string $format 'jpg'|'png'|'webp'
+     * @param int    $quality Qualidade para jpg/webp
+     * @param bool   $dataUri Se true, prefixa 'data:image/...;base64,'
+     * @return string
+     * @throws \Exception
+     */
+    public function toBase64(string $format = 'jpg', int $quality = 90, bool $dataUri = true): string
+    {
+        if (!$this->found || !$this->bounds) {
+            throw new \Exception("No face bounds available to toBase64");
+        }
+
+        $to_crop = [
+            'x'      => $this->bounds['x'] - ($this->padding_width / 2),
+            'y'      => $this->bounds['y'] - ($this->padding_height / 2),
+            'width'  => $this->bounds['w'] + $this->padding_width,
+            'height' => $this->bounds['w'] + $this->padding_height,
+        ];
+
+        $img = (clone $this->image)->crop(
+            (int) $to_crop['width'],
+            (int) $to_crop['height'],
+            (int) $to_crop['x'],
+            (int) $to_crop['y']
+        );
+
+        [$encoded, $mime] = $this->encodeImage($img, $format, $quality);
+        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string) $encoded;
+        $b64 = base64_encode($bin);
+
+        return $dataUri ? ("{$mime},{$b64}") : $b64;
+    }
+
+    /**
      * Salva recorte 1:1 com margem percentual ao redor da face, com resize/encode opcionais.
      *
      * @param string      $input         Caminho ou base64 (com/sem cabeçalho)
@@ -161,14 +198,81 @@ class FaceDetection
         }
 
         if (!$this->found || !$this->bounds) {
-            // Garante que bounds existem; se não, tenta extrair a partir do input
             $this->extract($input);
             if (!$this->found || !$this->bounds) {
                 throw new \Exception("No face bounds available to saveWithMargin");
             }
         }
 
-        $img  = (clone $this->image);
+        $img = $this->cropWithMargin((clone $this->image), $marginFator);
+
+        if ($resize !== null) {
+            $img = $img->scaleDown($resize, $resize);
+        }
+
+        if ($forceFormat) {
+            $fmt = strtolower($forceFormat);
+            if ($fmt === 'jpg' || $fmt === 'jpeg') {
+                $img = $img->encode(new JpegEncoder(quality: $jpgQuality));
+            } elseif ($fmt === 'png') {
+                $img = $img->encode(new PngEncoder());
+            } elseif ($fmt === 'webp') {
+                $img = $img->encode(new WebpEncoder(quality: $jpgQuality));
+            }
+        }
+
+        $img->save($file_name);
+    }
+
+    /**
+     * Retorna o recorte 1:1 com margem em BASE64 (Data URI).
+     *
+     * @param string   $input        Caminho/base64 (se bounds não existirem, usa)
+     * @param float    $marginFator  Ex.: 0.30 = 30% de margem
+     * @param int|null $resize       Ex.: 512 (lado final). Null mantém.
+     * @param string   $format       'jpg'|'png'|'webp'
+     * @param int      $quality      Qualidade para jpg/webp
+     * @param bool     $dataUri      true => retorna 'data:image/...;base64,...'
+     * @return string
+     * @throws \Exception
+     */
+    public function toBase64WithMargin(
+        string $input,
+        float $marginFator = 0.30,
+        ?int $resize = 512,
+        string $format = 'jpg',
+        int $quality = 90,
+        bool $dataUri = true
+    ): string {
+        if (!$this->found || !$this->bounds) {
+            $this->extract($input);
+            if (!$this->found || !$this->bounds) {
+                throw new \Exception("No face bounds available to toBase64WithMargin");
+            }
+        }
+
+        $img = $this->cropWithMargin((clone $this->image), $marginFator);
+
+        if ($resize !== null) {
+            $img = $img->scaleDown($resize, $resize);
+        }
+
+        [$encoded, $mime] = $this->encodeImage($img, $format, $quality);
+        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string) $encoded;
+        $b64 = base64_encode($bin);
+
+        return $dataUri ? ("{$mime},{$b64}") : $b64;
+    }
+
+    /**
+     * Faz o recorte 1:1 com margem sobre uma cópia da imagem atual.
+     *
+     * @param ImageInterface $img
+     * @param float $marginFator
+     * @return ImageInterface
+     */
+    private function cropWithMargin(ImageInterface $img, float $marginFator): ImageInterface
+    {
         $imgW = $img->width();
         $imgH = $img->height();
 
@@ -205,31 +309,34 @@ class FaceDetection
         $side = min($side, $imgW, $imgH);
 
         // 4) Crop
-        $img = $img->crop(
+        return $img->crop(
             (int) round($side),
             (int) round($side),
             (int) round($sqX1),
             (int) round($sqY1)
         );
+    }
 
-        // 5) Resize opcional
-        if ($resize !== null) {
-            $img = $img->scaleDown($resize, $resize);
+    /**
+     * Codifica imagem no formato desejado e devolve [encoded, mime-prefix]
+     *
+     * @param ImageInterface $img
+     * @param string $format
+     * @param int $quality
+     * @return array{0: mixed, 1: string}
+     */
+    private function encodeImage(ImageInterface $img, string $format, int $quality): array
+    {
+        $fmt = strtolower($format);
+        if ($fmt === 'jpg' || $fmt === 'jpeg') {
+            return [$img->encode(new JpegEncoder(quality: $quality)), 'data:image/jpeg;base64'];
+        } elseif ($fmt === 'png') {
+            return [$img->encode(new PngEncoder()), 'data:image/png;base64'];
+        } elseif ($fmt === 'webp') {
+            return [$img->encode(new WebpEncoder(quality: $quality)), 'data:image/webp;base64'];
         }
-
-        // 6) Encoder/saída
-        if ($forceFormat) {
-            $fmt = strtolower($forceFormat);
-            if ($fmt === 'jpg' || $fmt === 'jpeg') {
-                $img = $img->encode(new JpegEncoder(quality: $jpgQuality));
-            } elseif ($fmt === 'png') {
-                $img = $img->encode(new PngEncoder());
-            } elseif ($fmt === 'webp') {
-                $img = $img->encode(new WebpEncoder(quality: $jpgQuality));
-            }
-        }
-
-        $img->save($file_name);
+        // default jpg
+        return [$img->encode(new JpegEncoder(quality: $quality)), 'data:image/jpeg;base64'];
     }
 
     /**
@@ -339,14 +446,12 @@ class FaceDetection
             if (method_exists($channel, 'value')) {
                 return (int) $channel->value();
             }
-            // Algumas implementações podem expor toInteger()/toInt()
             if (method_exists($channel, 'toInteger')) {
                 return (int) $channel->toInteger();
             }
             if (method_exists($channel, 'toInt')) {
                 return (int) $channel->toInt();
             }
-            // Fallback bruto: tenta converter stringável
             if (method_exists($channel, '__toString')) {
                 $v = (string) $channel;
                 return (int) (is_numeric($v) ? $v : 0);
@@ -354,12 +459,10 @@ class FaceDetection
             return 0;
         }
 
-        // Número puro
         if (is_int($channel) || is_float($channel)) {
             return (int) $channel;
         }
 
-        // String numérica
         if (is_string($channel) && is_numeric($channel)) {
             return (int) $channel;
         }
@@ -395,24 +498,15 @@ class FaceDetection
             $rowsum2 = 0;
 
             for ($j = 1; $j < $ii_w - 1; $j++) {
-                // v3: pickColor() retorna um ColorInterface (RGB por padrão)
                 $px = $image->pickColor($j, $i);
 
                 $red = $green = $blue = 0;
 
                 if (is_object($px)) {
-                    // Preferimos coletar via canais
-                    if (method_exists($px, 'red')) {
-                        $red = $this->channelVal($px->red());
-                    }
-                    if (method_exists($px, 'green')) {
-                        $green = $this->channelVal($px->green());
-                    }
-                    if (method_exists($px, 'blue')) {
-                        $blue = $this->channelVal($px->blue());
-                    }
+                    if (method_exists($px, 'red'))   $red   = $this->channelVal($px->red());
+                    if (method_exists($px, 'green')) $green = $this->channelVal($px->green());
+                    if (method_exists($px, 'blue'))  $blue  = $this->channelVal($px->blue());
 
-                    // Se por alguma razão não populou, tenta via toArray()
                     if (($red|$green|$blue) === 0 && method_exists($px, 'toArray')) {
                         $arr = $px->toArray();
                         if (is_array($arr) && count($arr) >= 3) {
@@ -422,7 +516,6 @@ class FaceDetection
                         }
                     }
                 } elseif (is_array($px) && count($px) >= 3) {
-                    // Alguns drivers podem devolver array [r,g,b,(a)]
                     $red   = (int) $px[0];
                     $green = (int) $px[1];
                     $blue  = (int) $px[2];
