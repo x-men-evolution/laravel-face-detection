@@ -33,6 +33,13 @@ class FaceDetection
     /** @var array<int, mixed> */
     private $detection_data;
 
+    /**
+     * Limite superior de expansão automática do lado do quadrado
+     * em relação ao tamanho da face (lado = max(w,h) * auto_expand_cap).
+     * Ex.: 1.6 ≈ até +60% no lado, se houver espaço nas bordas.
+     */
+    private float $auto_expand_cap = 1.6;
+
     public function __construct()
     {
         $this->driver = $this->defaultDriver();
@@ -40,6 +47,8 @@ class FaceDetection
         if (function_exists('config')) {
             $this->padding_width  = (int) (config('facedetection.padding_width', 0));
             $this->padding_height = (int) (config('facedetection.padding_height', 0));
+            // opcional: permitir override por config, mas não obrigatório
+            $this->auto_expand_cap = (float) (config('facedetection.auto_expand_cap', $this->auto_expand_cap));
         }
 
         $detection_file = __DIR__ . '/Data/face.dat';
@@ -138,11 +147,10 @@ class FaceDetection
 
     /**
      * Retorna o recorte padrão (como save()), porém em BASE64 (Data URI).
-     * Útil para pré-visualizar sem salvar em disco.
      *
      * @param string $format 'jpg'|'png'|'webp'
-     * @param int    $quality Qualidade para jpg/webp
-     * @param bool   $dataUri Se true, prefixa 'data:image/...;base64,'
+     * @param int    $quality
+     * @param bool   $dataUri
      * @return string
      * @throws \Exception
      */
@@ -174,16 +182,46 @@ class FaceDetection
     }
 
     /**
-     * Salva recorte 1:1 com margem percentual ao redor da face, com resize/encode opcionais.
+     * Retorna o recorte 1:1 com MARGEM AUTOMÁTICA (sem passar fator),
+     * em Base64 (Data URI). Garante que o quadrado fica dentro da imagem.
      *
-     * @param string      $input         Caminho ou base64 (com/sem cabeçalho)
-     * @param string      $file_name     Caminho destino
-     * @param float       $marginFator   0.30 = 30% de margem
-     * @param int|null    $resize        Lado final (px) - null mantém
-     * @param string|null $forceFormat   'jpg'|'png'|'webp'|null
-     * @param int         $jpgQuality    Qualidade (JPG/WebP)
+     * @param string   $input   Caminho/base64 (usado se bounds ainda não existirem)
+     * @param int|null $resize  Lado final (px). Null mantém.
+     * @param string   $format  'jpg'|'png'|'webp'
+     * @param int      $quality Qualidade para jpg/webp
+     * @param bool     $dataUri Prefixar 'data:image/...;base64,'
+     * @return string
      * @throws \Exception
-     * @return void
+     */
+    public function toBase64Auto(
+        string $input,
+        ?int $resize = 512,
+        string $format = 'jpg',
+        int $quality = 90,
+        bool $dataUri = true
+    ): string {
+        if (!$this->found || !$this->bounds) {
+            $this->extract($input);
+            if (!$this->found || !$this->bounds) {
+                throw new \Exception("No face bounds available to toBase64Auto");
+            }
+        }
+
+        $img = $this->cropAutoSquare((clone $this->image));
+
+        if ($resize !== null) {
+            $img = $img->scaleDown($resize, $resize);
+        }
+
+        [$encoded, $mime] = $this->encodeImage($img, $format, $quality);
+        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string) $encoded;
+        $b64 = base64_encode($bin);
+
+        return $dataUri ? ("{$mime},{$b64}") : $b64;
+    }
+
+    /**
+     * Salva recorte 1:1 com margem PERCENTUAL (modo antigo, ainda disponível).
      */
     public function saveWithMargin(
         string $input,
@@ -225,51 +263,7 @@ class FaceDetection
     }
 
     /**
-     * Retorna o recorte 1:1 com margem em BASE64 (Data URI).
-     *
-     * @param string   $input        Caminho/base64 (se bounds não existirem, usa)
-     * @param float    $marginFator  Ex.: 0.30 = 30% de margem
-     * @param int|null $resize       Ex.: 512 (lado final). Null mantém.
-     * @param string   $format       'jpg'|'png'|'webp'
-     * @param int      $quality      Qualidade para jpg/webp
-     * @param bool     $dataUri      true => retorna 'data:image/...;base64,...'
-     * @return string
-     * @throws \Exception
-     */
-    public function toBase64WithMargin(
-        string $input,
-        float $marginFator = 0.30,
-        ?int $resize = 512,
-        string $format = 'jpg',
-        int $quality = 90,
-        bool $dataUri = true
-    ): string {
-        if (!$this->found || !$this->bounds) {
-            $this->extract($input);
-            if (!$this->found || !$this->bounds) {
-                throw new \Exception("No face bounds available to toBase64WithMargin");
-            }
-        }
-
-        $img = $this->cropWithMargin((clone $this->image), $marginFator);
-
-        if ($resize !== null) {
-            $img = $img->scaleDown($resize, $resize);
-        }
-
-        [$encoded, $mime] = $this->encodeImage($img, $format, $quality);
-        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string) $encoded;
-        $b64 = base64_encode($bin);
-
-        return $dataUri ? ("{$mime},{$b64}") : $b64;
-    }
-
-    /**
-     * Faz o recorte 1:1 com margem sobre uma cópia da imagem atual.
-     *
-     * @param ImageInterface $img
-     * @param float $marginFator
-     * @return ImageInterface
+     * Recorte 1:1 com margem percentual (modo antigo).
      */
     private function cropWithMargin(ImageInterface $img, float $marginFator): ImageInterface
     {
@@ -290,7 +284,7 @@ class FaceDetection
         $x2 = $x + $w + $expandW;
         $y2 = $y + $h + $expandH;
 
-        // 2) Quadrado
+        // 2) Quadrado centrado
         $cropW = $x2 - $x1;
         $cropH = $y2 - $y1;
         $side  = max($cropW, $cropH);
@@ -314,6 +308,50 @@ class FaceDetection
             (int) round($side),
             (int) round($sqX1),
             (int) round($sqY1)
+        );
+    }
+
+    /**
+     * Recorte 1:1 com margem AUTOMÁTICA.
+     * Aumenta o lado do quadrado até:
+     *  - encostar no limite mais próximo da imagem (sem extrapolar), e
+     *  - não ultrapassar auto_expand_cap * max(w,h)
+     * Assim, dá o maior “respiro” possível sem cortar topo/queixo/laterais.
+     */
+    private function cropAutoSquare(ImageInterface $img): ImageInterface
+    {
+        $imgW = $img->width();
+        $imgH = $img->height();
+
+        $x = (float) $this->bounds['x'];
+        $y = (float) $this->bounds['y'];
+        $w = (float) $this->bounds['w'];
+        $h = (float) $this->bounds['h'];
+
+        $faceSide   = max($w, $h);
+        $baseHalf   = $faceSide / 2.0;
+        $cx         = $x + $w / 2.0;
+        $cy         = $y + $h / 2.0;
+
+        // Maior half-side possível mantendo o quadrado centrado e dentro da imagem:
+        $halfByEdges = min($cx, $imgW - $cx, $cy, $imgH - $cy);
+
+        // Preferência: expandir até auto_expand_cap * baseHalf, mas sem passar das bordas:
+        $halfPreferred = $baseHalf * $this->auto_expand_cap;
+
+        // Half final: não menor que baseHalf (para conter a face), nem maior que os limites
+        $half = max($baseHalf, min($halfPreferred, $halfByEdges));
+
+        $side = 2.0 * $half;
+        $x1   = $cx - $half;
+        $y1   = $cy - $half;
+
+        // (Com half <= halfByEdges, x1/y1 já respeitam bordas, mas arredondamos)
+        return $img->crop(
+            (int) round($side),
+            (int) round($side),
+            (int) round($x1),
+            (int) round($y1)
         );
     }
 
@@ -434,50 +472,27 @@ class FaceDetection
 
     /**
      * Helper para extrair o valor (int) de um canal de cor (Intervention v3).
-     * Aceita Channel objects, ints ou strings numéricas.
-     *
-     * @param mixed $channel
-     * @return int
      */
     private function channelVal($channel): int
     {
-        // Objeto de canal com método value()
         if (is_object($channel)) {
-            if (method_exists($channel, 'value')) {
-                return (int) $channel->value();
-            }
-            if (method_exists($channel, 'toInteger')) {
-                return (int) $channel->toInteger();
-            }
-            if (method_exists($channel, 'toInt')) {
-                return (int) $channel->toInt();
-            }
+            if (method_exists($channel, 'value')) return (int) $channel->value();
+            if (method_exists($channel, 'toInteger')) return (int) $channel->toInteger();
+            if (method_exists($channel, 'toInt')) return (int) $channel->toInt();
             if (method_exists($channel, '__toString')) {
                 $v = (string) $channel;
                 return (int) (is_numeric($v) ? $v : 0);
             }
             return 0;
         }
-
-        if (is_int($channel) || is_float($channel)) {
-            return (int) $channel;
-        }
-
-        if (is_string($channel) && is_numeric($channel)) {
-            return (int) $channel;
-        }
-
+        if (is_int($channel) || is_float($channel)) return (int) $channel;
+        if (is_string($channel) && is_numeric($channel)) return (int) $channel;
         return 0;
     }
 
     /**
      * Integrais da imagem (soma e soma dos quadrados).
      * Compatível com pickColor() da v3.
-     *
-     * @param ImageInterface $image
-     * @param int $image_width
-     * @param int $image_height
-     * @return array{ii: array, ii2: array}
      */
     protected function compute_ii(ImageInterface $image, int $image_width, int $image_height)
     {
@@ -539,12 +554,6 @@ class FaceDetection
 
     /**
      * Detector greedy (igual ao original).
-     *
-     * @param array $ii
-     * @param array $ii2
-     * @param int   $width
-     * @param int   $height
-     * @return array{x:float,y:float,w:float}|null
      */
     protected function do_detect_greedy_big_to_small($ii, $ii2, $width, $height)
     {
@@ -645,30 +654,20 @@ class FaceDetection
     }
 
     /**
-     * Normaliza o input para aceitar:
-     * - Caminho de arquivo
-     * - Data-URI base64 (data:image/...)
-     * - Base64 "cru" (assume JPEG)
+     * Normaliza o input: caminho, data-uri base64, base64 cru.
      */
     private function normalizeInput(string $input): string
     {
-        // Data-URI?
         if (str_starts_with($input, 'data:image/')) {
             return $input;
         }
-
-        // Caminho de arquivo?
         if (is_file($input)) {
             return $input;
         }
-
-        // Provável base64 "cru"? (tolerante a quebras de linha)
         $maybeBase64 = preg_replace('/\s+/', '', $input ?? '');
         if ($maybeBase64 !== null && preg_match('/^[A-Za-z0-9+\/=]+$/', $maybeBase64)) {
             return 'data:image/jpeg;base64,' . $maybeBase64;
         }
-
-        // Fallback
         return $input;
     }
 }
