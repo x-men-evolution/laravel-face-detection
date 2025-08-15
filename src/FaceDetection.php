@@ -1,6 +1,6 @@
 <?php
 
-namespace Arhey\FaceDetection;
+namespace EvolutionTech\FaceDetection;
 
 use Intervention\Image\ImageManager;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
