@@ -1,6 +1,6 @@
 <?php
 
-namespace EvolutionTech\FaceDetection;
+namespace Arhey\FaceDetection;
 
 use Intervention\Image\ImageManager;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
@@ -34,21 +34,23 @@ class FaceDetection
     private $detection_data;
 
     /**
-     * Limite superior de expansão automática do lado do quadrado
-     * em relação ao tamanho da face (lado = max(w,h) * auto_expand_cap).
-     * Ex.: 1.6 ≈ até +60% no lado, se houver espaço nas bordas.
+     * Expansão automática (lado do quadrado) relativa à face: lado <= max(w,h) * cap
+     * e parâmetros de “headroom” para não cortar topo/queixo.
      */
-    private float $auto_expand_cap = 1.6;
+    private float $auto_expand_cap       = 1.6; // até +60% no lado, se couber
+    private float $auto_top_margin_factor= 0.35; // +35% do lado da face acima do topo da face
+    private float $auto_vertical_bias    = 0.15; // desloca centro para cima em 15% do lado da face
 
     public function __construct()
     {
         $this->driver = $this->defaultDriver();
 
         if (function_exists('config')) {
-            $this->padding_width  = (int) (config('facedetection.padding_width', 0));
-            $this->padding_height = (int) (config('facedetection.padding_height', 0));
-            // opcional: permitir override por config, mas não obrigatório
+            $this->padding_width   = (int) (config('facedetection.padding_width', 0));
+            $this->padding_height  = (int) (config('facedetection.padding_height', 0));
             $this->auto_expand_cap = (float) (config('facedetection.auto_expand_cap', $this->auto_expand_cap));
+            $this->auto_top_margin_factor = (float) (config('facedetection.auto_top_margin_factor', $this->auto_top_margin_factor));
+            $this->auto_vertical_bias     = (float) (config('facedetection.auto_vertical_bias', $this->auto_vertical_bias));
         }
 
         $detection_file = __DIR__ . '/Data/face.dat';
@@ -68,20 +70,15 @@ class FaceDetection
      *
      * - Aplica orientação por EXIF (orient()).
      * - Se não encontrar, tenta novamente com rotações 90°, 270° e 180°.
-     *
-     * @param string $file
-     * @return $this
      */
     public function extract($file)
     {
         $base = $this->driver->read($this->normalizeInput($file));
 
-        // Em v3 a auto-orientação costuma ocorrer, mas garantimos explicitamente
         if (method_exists($base, 'orient')) {
             $base = $base->orient();
         }
 
-        // Tenta nas rotações: 0°, 90°, 270°, 180°
         $angles = [0, 90, 270, 180];
         $foundBounds = null;
         $finalImage  = null;
@@ -101,7 +98,6 @@ class FaceDetection
 
         if ($this->bounds) {
             $this->found = true;
-            // Arredonda como no original
             $this->bounds['x'] = round($this->bounds['x'], 1);
             $this->bounds['y'] = round($this->bounds['y'], 1);
             $this->bounds['w'] = round($this->bounds['w'], 1);
@@ -111,13 +107,7 @@ class FaceDetection
         return $this;
     }
 
-    /**
-     * Salva o recorte padrão (sem margem adicional além do padding configurado).
-     *
-     * @param string $file_name
-     * @throws \Exception
-     * @return void
-     */
+    /** Salva recorte padrão (padding configurado). */
     public function save($file_name)
     {
         if (file_exists($file_name)) {
@@ -145,15 +135,7 @@ class FaceDetection
         $img->save($file_name);
     }
 
-    /**
-     * Retorna o recorte padrão (como save()), porém em BASE64 (Data URI).
-     *
-     * @param string $format 'jpg'|'png'|'webp'
-     * @param int    $quality
-     * @param bool   $dataUri
-     * @return string
-     * @throws \Exception
-     */
+    /** Retorna recorte padrão em Base64 (Data-URI opcional). */
     public function toBase64(string $format = 'jpg', int $quality = 90, bool $dataUri = true): string
     {
         if (!$this->found || !$this->bounds) {
@@ -181,18 +163,7 @@ class FaceDetection
         return $dataUri ? ("{$mime},{$b64}") : $b64;
     }
 
-    /**
-     * Retorna o recorte 1:1 com MARGEM AUTOMÁTICA (sem passar fator),
-     * em Base64 (Data URI). Garante que o quadrado fica dentro da imagem.
-     *
-     * @param string   $input   Caminho/base64 (usado se bounds ainda não existirem)
-     * @param int|null $resize  Lado final (px). Null mantém.
-     * @param string   $format  'jpg'|'png'|'webp'
-     * @param int      $quality Qualidade para jpg/webp
-     * @param bool     $dataUri Prefixar 'data:image/...;base64,'
-     * @return string
-     * @throws \Exception
-     */
+    /** Base64 1:1 com margem automática (sem informar fator). */
     public function toBase64Auto(
         string $input,
         ?int $resize = 512,
@@ -220,9 +191,7 @@ class FaceDetection
         return $dataUri ? ("{$mime},{$b64}") : $b64;
     }
 
-    /**
-     * Salva recorte 1:1 com margem PERCENTUAL (modo antigo, ainda disponível).
-     */
+    /** Salva 1:1 com margem percentual (modo antigo, ainda disponível). */
     public function saveWithMargin(
         string $input,
         string $file_name,
@@ -262,9 +231,7 @@ class FaceDetection
         $img->save($file_name);
     }
 
-    /**
-     * Recorte 1:1 com margem percentual (modo antigo).
-     */
+    /** Recorte 1:1 com margem percentual (modo antigo). */
     private function cropWithMargin(ImageInterface $img, float $marginFator): ImageInterface
     {
         $imgW = $img->width();
@@ -275,7 +242,6 @@ class FaceDetection
         $w = (float) $this->bounds['w'];
         $h = (float) $this->bounds['h'];
 
-        // 1) Expansão por margem
         $expandW = $w * $marginFator;
         $expandH = $h * $marginFator;
 
@@ -284,7 +250,6 @@ class FaceDetection
         $x2 = $x + $w + $expandW;
         $y2 = $y + $h + $expandH;
 
-        // 2) Quadrado centrado
         $cropW = $x2 - $x1;
         $cropH = $y2 - $y1;
         $side  = max($cropW, $cropH);
@@ -295,14 +260,12 @@ class FaceDetection
         $sqX1 = $cx - $side / 2.0;
         $sqY1 = $cy - $side / 2.0;
 
-        // 3) Clamping nas bordas
         if ($sqX1 < 0) $sqX1 = 0;
         if ($sqY1 < 0) $sqY1 = 0;
         if ($sqX1 + $side > $imgW) $sqX1 = max(0, $imgW - $side);
         if ($sqY1 + $side > $imgH) $sqY1 = max(0, $imgH - $side);
         $side = min($side, $imgW, $imgH);
 
-        // 4) Crop
         return $img->crop(
             (int) round($side),
             (int) round($side),
@@ -312,11 +275,12 @@ class FaceDetection
     }
 
     /**
-     * Recorte 1:1 com margem AUTOMÁTICA.
-     * Aumenta o lado do quadrado até:
-     *  - encostar no limite mais próximo da imagem (sem extrapolar), e
-     *  - não ultrapassar auto_expand_cap * max(w,h)
-     * Assim, dá o maior “respiro” possível sem cortar topo/queixo/laterais.
+     * Recorte 1:1 com MARGEM AUTOMÁTICA + viés para o topo.
+     * - aumenta o lado do quadrado até encostar nas bordas (sem ultrapassar),
+     *   limitado por auto_expand_cap;
+     * - exige um headroom mínimo acima do topo da face (auto_top_margin_factor);
+     * - desloca o centro verticalmente para cima (auto_vertical_bias) para
+     *   priorizar cabelo/enfeites sem cortar queixo.
      */
     private function cropAutoSquare(ImageInterface $img): ImageInterface
     {
@@ -328,25 +292,42 @@ class FaceDetection
         $w = (float) $this->bounds['w'];
         $h = (float) $this->bounds['h'];
 
-        $faceSide   = max($w, $h);
-        $baseHalf   = $faceSide / 2.0;
-        $cx         = $x + $w / 2.0;
-        $cy         = $y + $h / 2.0;
+        $faceSide = max($w, $h);
+        $baseHalf = $faceSide / 2.0;
+        $cx       = $x + $w / 2.0;
+        $cy       = $y + $h / 2.0;
 
-        // Maior half-side possível mantendo o quadrado centrado e dentro da imagem:
+        $topGoal  = $this->auto_top_margin_factor * $faceSide;   // headroom desejado
+        $capHalf  = $baseHalf * $this->auto_expand_cap;
+
+        // maior half respeitando bordas atuais do centro:
         $halfByEdges = min($cx, $imgW - $cx, $cy, $imgH - $cy);
 
-        // Preferência: expandir até auto_expand_cap * baseHalf, mas sem passar das bordas:
-        $halfPreferred = $baseHalf * $this->auto_expand_cap;
+        // half que atende headroom (se couber), sem ultrapassar cap/bordas
+        $half = max($baseHalf + $topGoal, $baseHalf);
+        $half = min($half, $capHalf, $halfByEdges);
 
-        // Half final: não menor que baseHalf (para conter a face), nem maior que os limites
-        $half = max($baseHalf, min($halfPreferred, $halfByEdges));
+        // deslocamento vertical para cima (viés)
+        $biasPix = $this->auto_vertical_bias * $faceSide;
 
+        // para garantir o headroom, centro deve obedecer: (cy' - half) <= (y - topGoal)
+        $maxCyForTopGoal = $y - $topGoal + $half; // centro máximo (mais alto possível) pra manter headroom
+        $cyDesired       = min($cy - $biasPix, $maxCyForTopGoal);
+
+        // limites de centro para ficar dentro da imagem
+        $cyLow  = $half;
+        $cyHigh = $imgH - $half;
+        $cyNew  = max($cyLow, min($cyDesired, $cyHigh));
+
+        // coordenadas finais do quadrado
         $side = 2.0 * $half;
         $x1   = $cx - $half;
-        $y1   = $cy - $half;
+        $y1   = $cyNew - $half;
 
-        // (Com half <= halfByEdges, x1/y1 já respeitam bordas, mas arredondamos)
+        // proteção pós-arredondamento
+        $x1 = max(0.0, min($x1, $imgW - $side));
+        $y1 = max(0.0, min($y1, $imgH - $side));
+
         return $img->crop(
             (int) round($side),
             (int) round($side),
@@ -355,14 +336,7 @@ class FaceDetection
         );
     }
 
-    /**
-     * Codifica imagem no formato desejado e devolve [encoded, mime-prefix]
-     *
-     * @param ImageInterface $img
-     * @param string $format
-     * @param int $quality
-     * @return array{0: mixed, 1: string}
-     */
+    /** Codifica imagem e retorna [encoded, 'data:image/...;base64'] */
     private function encodeImage(ImageInterface $img, string $format, int $quality): array
     {
         $fmt = strtolower($format);
@@ -373,21 +347,15 @@ class FaceDetection
         } elseif ($fmt === 'webp') {
             return [$img->encode(new WebpEncoder(quality: $quality)), 'data:image/webp;base64'];
         }
-        // default jpg
         return [$img->encode(new JpegEncoder(quality: $quality)), 'data:image/jpeg;base64'];
     }
 
-    /**
-     * Detecta bounds a partir de uma imagem (com downscale para acelerar).
-     * @param ImageInterface $img
-     * @return array{x:float,y:float,w:float,h:float}|null
-     */
+    /** Detecta bounds (faz downscale pra acelerar). */
     private function detectBoundsFromImage(ImageInterface $img): ?array
     {
         $im_width  = $img->width();
         $im_height = $img->height();
 
-        // Reduz para ~320x240 se maior (acelera)
         $ratioW = $im_width  / 320.0;
         $ratioH = $im_height / 240.0;
         $ratio  = max($ratioW, $ratioH);
@@ -433,10 +401,7 @@ class FaceDetection
         return $bounds;
     }
 
-    /**
-     * Cria o ImageManager conforme config (facedetection.driver).
-     * v3 exige DriverInterface OU 'gd'/'imagick'.
-     */
+    /** Cria ImageManager conforme config (facedetection.driver). */
     protected function defaultDriver(): ImageManager
     {
         $driverKey = 'gd';
@@ -451,12 +416,7 @@ class FaceDetection
         };
     }
 
-    /**
-     * Integrais e metadados da imagem.
-     *
-     * @param ImageInterface $image
-     * @return array{width:int,height:int,ii:array,ii2:array}
-     */
+    /** Integrais e metadados. */
     protected function get_img_stats(ImageInterface $image)
     {
         $image_width  = $image->width();
@@ -470,9 +430,7 @@ class FaceDetection
         ];
     }
 
-    /**
-     * Helper para extrair o valor (int) de um canal de cor (Intervention v3).
-     */
+    /** Valor inteiro de um canal (Intervention v3). */
     private function channelVal($channel): int
     {
         if (is_object($channel)) {
@@ -490,10 +448,7 @@ class FaceDetection
         return 0;
     }
 
-    /**
-     * Integrais da imagem (soma e soma dos quadrados).
-     * Compatível com pickColor() da v3.
-     */
+    /** Integrais da imagem (soma e soma dos quadrados). */
     protected function compute_ii(ImageInterface $image, int $image_width, int $image_height)
     {
         $ii_w = $image_width + 1;
@@ -552,9 +507,7 @@ class FaceDetection
         return ['ii' => $ii, 'ii2' => $ii2];
     }
 
-    /**
-     * Detector greedy (igual ao original).
-     */
+    /** Detector greedy (igual ao original). */
     protected function do_detect_greedy_big_to_small($ii, $ii2, $width, $height)
     {
         $s_w          = $width / 20.0;
@@ -581,9 +534,7 @@ class FaceDetection
         return null;
     }
 
-    /**
-     * Etapa de avaliação do classificador.
-     */
+    /** Avaliação do classificador em subimagem. */
     protected function detect_on_sub_image($x, $y, $scale, $ii, $ii2, $w, $iiw, $inv_area)
     {
         $mean  = ($ii[($y + $w) * $iiw + $x + $w] + $ii[$y * $iiw + $x] - $ii[($y + $w) * $iiw + $x] - $ii[$y * $iiw + $x + $w]) * $inv_area;
@@ -653,9 +604,7 @@ class FaceDetection
         return true;
     }
 
-    /**
-     * Normaliza o input: caminho, data-uri base64, base64 cru.
-     */
+    /** Normaliza input: caminho, data-uri base64, base64 cru. */
     private function normalizeInput(string $input): string
     {
         if (str_starts_with($input, 'data:image/')) {
