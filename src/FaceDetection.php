@@ -877,4 +877,49 @@ class FaceDetection
         return $dataUri ? ("{$mime},{$b64}") : $b64;
     }
 
+        /**
+     * Gera base64 1:1 expandindo FIXO +40% ao redor da face antes do corte.
+     * - Se ainda não houver bounds (this->found = false), chama extract($input).
+     * - Clampa nas bordas da imagem para não estourar.
+     * - Opcionalmente redimensiona para $resize x $resize (mantendo 1:1).
+     *
+     * @param string   $input    Caminho ou base64 (com/sem data-uri), caso ainda não tenha extract().
+     * @param int|null $resize   Lado final (px). Null mantém o tamanho do recorte.
+     * @param string   $format   'jpg'|'png'|'webp'
+     * @param int      $quality  Qualidade (JPG/WEBP)
+     * @param bool     $dataUri  true para retornar "data:image/...;base64,XXXX"
+     * @return string            Base64 (com ou sem data-uri)
+     * @throws \Exception
+     */
+    public function toBase64WithMargin40(
+        string $input,
+        ?int $resize = 512,
+        string $format = 'jpg',
+        int $quality = 95,
+        bool $dataUri = true
+    ): string {
+        // garante bounds
+        if (!$this->found || !$this->bounds) {
+            $this->extract($input);
+            if (!$this->found || !$this->bounds) {
+                throw new \Exception("No face bounds available to toBase64WithMargin40");
+            }
+        }
+
+        // recorta com margem fixa de +40%
+        $img = $this->cropWithMargin((clone $this->image), 0.40);
+
+        // resize opcional
+        if ($resize !== null) {
+            $img = $img->scaleDown($resize, $resize);
+        }
+
+        // encode e devolve base64
+        [$encoded, $mime] = $this->encodeImage($img, $format, $quality);
+        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string) $encoded;
+        $b64 = base64_encode($bin);
+
+        return $dataUri ? ("{$mime},{$b64}") : $b64;
+    }
+
 }
