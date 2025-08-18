@@ -2,12 +2,12 @@
 
 namespace EvolutionTech\FaceDetection;
 
-use Intervention\Image\ImageManager;
 use Intervention\Image\Drivers\Gd\Driver as GdDriver;
 use Intervention\Image\Drivers\Imagick\Driver as ImagickDriver;
 use Intervention\Image\Encoders\JpegEncoder;
 use Intervention\Image\Encoders\PngEncoder;
 use Intervention\Image\Encoders\WebpEncoder;
+use Intervention\Image\ImageManager;
 use Intervention\Image\Interfaces\ImageInterface;
 
 class FaceDetection
@@ -619,4 +619,262 @@ class FaceDetection
         }
         return $input;
     }
+
+
+
+        /**
+     * Faz o auto-crop 1x1, valida o enquadramento do rosto e, se necessário,
+     * busca recursivamente entre 40 offsets (10⇢, 10⇠, 10⇡, 10⇣) até encontrar
+     * um crop "perfeito" para reconhecimento.
+     *
+     * @param string      $input       base64/data-uri/arquivo de origem (usado se ainda não houver $this->image/$this->bounds)
+     * @param int|null    $resize      lado final do thumbnail (px). Null = mantém
+     * @param string      $format      'jpg' | 'png' | 'webp'
+     * @param int         $quality     qualidade do encoder
+     * @param bool        $dataUri     true => retorna "data:image/..;base64,..."
+     * @param int         $steps       passos por direção (10 => 40 tentativas)
+     * @param float       $stepFrac    fração do lado da FACE por passo (ex.: 0.03 = 3%)
+     * @param float|null  $minMargin   margem mínima (fração do lado do crop) em todos os lados (padrão: 0.08)
+     * @param float|null  $minScale    fração mínima do lado do crop ocupada pela face (padrão: 0.35)
+     * @param float|null  $maxScale    fração máxima do lado do crop ocupada pela face (padrão: 0.85)
+     * @return string                  imagem final em base64 (com ou sem data-uri)
+     * @throws \Exception
+     */
+    public function toBase64AutoRecursive(
+        string $input,
+        ?int $resize = 512,
+        string $format = 'jpg',
+        int $quality = 90,
+        bool $dataUri = true,
+        int $steps = 10,
+        float $stepFrac = 0.03,
+        ?float $minMargin = null,
+        ?float $minScale = null,
+        ?float $maxScale = null
+    ): string {
+        // 1) Garante detecção inicial
+        if (!$this->found || !$this->bounds) {
+            $this->extract($input);
+            if (!$this->found || !$this->bounds) {
+                throw new \Exception('Face não encontrada na imagem de entrada.');
+            }
+        }
+
+        // 2) Parâmetros de validação (com fallback para config)
+        $minMargin = $minMargin ?? (function_exists('config') ? (float) config('facedetection.validate_min_margin', 0.08) : 0.08);
+        $minScale  = $minScale  ?? (function_exists('config') ? (float) config('facedetection.validate_min_scale', 0.35) : 0.35);
+        $maxScale  = $maxScale  ?? (function_exists('config') ? (float) config('facedetection.validate_max_scale', 0.85) : 0.85);
+
+        // 3) Tenta o crop padrão (sem offset)
+        $baseCrop = $this->cropAutoSquare((clone $this->image));
+        if ($this->validateFaceCrop($baseCrop, $minMargin, $minScale, $maxScale)) {
+            return $this->encodeOut($baseCrop, $resize, $format, $quality, $dataUri);
+        }
+
+        // 4) Gera offsets (40 no total com $steps=10)
+        $offsets = $this->generateDirectionalOffsets($steps, $stepFrac);
+
+        // 5) Busca recursiva
+        $result = $this->recursiveTryOffsets($offsets, 0, $minMargin, $minScale, $maxScale, $resize, $format, $quality, $dataUri);
+        if ($result !== null) {
+            return $result;
+        }
+
+        // 6) Fallback: retorna o melhor esforço mesmo sem passar na validação
+        // (ou lance exceção se preferir falhar estritamente)
+        // throw new \Exception('Não foi possível gerar um crop validado após testar todos os offsets.');
+        return $this->encodeOut($baseCrop, $resize, $format, $quality, $dataUri);
+    }
+
+    /**
+     * Recursão: tenta offsets em sequência até validar um crop.
+     *
+     * @param array<int, array{dx:float, dy:float}> $offsets
+     * @return string|null base64 pronto ou null se nenhum offset servir
+     */
+    private function recursiveTryOffsets(
+        array $offsets,
+        int $index,
+        float $minMargin,
+        float $minScale,
+        float $maxScale,
+        ?int $resize,
+        string $format,
+        int $quality,
+        bool $dataUri
+    ): ?string {
+        if ($index >= count($offsets)) {
+            return null;
+        }
+
+        $dx = $offsets[$index]['dx'];
+        $dy = $offsets[$index]['dy'];
+
+        $candidate = $this->cropAutoSquareWithOffset((clone $this->image), $dx, $dy);
+
+        if ($this->validateFaceCrop($candidate, $minMargin, $minScale, $maxScale)) {
+            return $this->encodeOut($candidate, $resize, $format, $quality, $dataUri);
+        }
+
+        // próximo offset (recursivo)
+        return $this->recursiveTryOffsets($offsets, $index + 1, $minMargin, $minScale, $maxScale, $resize, $format, $quality, $dataUri);
+    }
+
+    /**
+     * Gera offsets direcionais relativos ao TAMANHO DA FACE.
+     * Ex.: stepFrac=0.03 e steps=10 => deslocamentos de 3% a 30% do lado da face.
+     *
+     * Ordem: direita+, esquerda-, cima-, baixo+  (total 4 * steps)
+     *
+     * @return array<int, array{dx:float, dy:float}>
+     */
+    private function generateDirectionalOffsets(int $steps = 10, float $stepFrac = 0.03): array
+    {
+        $list = [];
+        for ($i = 1; $i <= $steps; $i++) {
+            $f = $i * $stepFrac;
+            // direita
+            $list[] = ['dx' => +$f, 'dy' => 0.0];
+            // esquerda
+            $list[] = ['dx' => -$f, 'dy' => 0.0];
+            // cima (y negativo)
+            $list[] = ['dx' => 0.0, 'dy' => -$f];
+            // baixo (y positivo)
+            $list[] = ['dx' => 0.0, 'dy' => +$f];
+        }
+        return $list;
+    }
+
+    /**
+     * Valida se o crop contém um rosto BEM ENQUADRADO.
+     * Critérios:
+     *  - face detectável (usa o mesmo detector no crop);
+     *  - margem mínima em todos os lados (fração do lado do crop);
+     *  - escala da face dentro de [minScale, maxScale] do lado do crop.
+     */
+    private function validateFaceCrop(
+        ImageInterface $crop,
+        float $minMargin = 0.08,
+        float $minScale = 0.35,
+        float $maxScale = 0.85
+    ): bool {
+        $side = $crop->width(); // é quadrado
+        if ($side <= 0) return false;
+
+        $stats  = $this->get_img_stats($crop);
+        $bounds = $this->do_detect_greedy_big_to_small(
+            $stats['ii'],
+            $stats['ii2'],
+            $stats['width'],
+            $stats['height']
+        );
+
+        if (!$bounds || $bounds['w'] <= 0) {
+            return false; // não achou face no crop
+        }
+
+        // escala (tamanho relativo da face)
+        $faceFrac = $bounds['w'] / $side;
+        if ($faceFrac < $minScale || $faceFrac > $maxScale) {
+            return false;
+        }
+
+        // margens normalizadas
+        $left   = $bounds['x'];
+        $top    = $bounds['y'];
+        $right  = $side - ($bounds['x'] + $bounds['w']);
+        $bottom = $side - ($bounds['y'] + $bounds['w']);
+
+        $minPix = $minMargin * $side;
+
+        if ($left < $minPix || $right < $minPix || $top < $minPix || $bottom < $minPix) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Variação do auto-crop com deslocamento manual do centro do quadrado.
+     * $dx e $dy são FRAÇÕES do lado da FACE (não do crop). Positivo: direita/baixo.
+     */
+    private function cropAutoSquareWithOffset(ImageInterface $img, float $dx, float $dy): ImageInterface
+    {
+        $imgW = $img->width();
+        $imgH = $img->height();
+
+        $x = (float) $this->bounds['x'];
+        $y = (float) $this->bounds['y'];
+        $w = (float) $this->bounds['w'];
+        $h = (float) $this->bounds['h'];
+
+        $faceSide = max($w, $h);
+        $baseHalf = $faceSide / 2.0;
+        $cx       = $x + $w / 2.0;
+        $cy       = $y + $h / 2.0;
+
+        // parâmetros herdados da classe
+        $topGoal  = $this->auto_top_margin_factor * $faceSide;
+        $capHalf  = $baseHalf * $this->auto_expand_cap;
+        $biasPix  = $this->auto_vertical_bias * $faceSide;
+
+        // half por bordas
+        $halfByEdges = min($cx, $imgW - $cx, $cy, $imgH - $cy);
+
+        // half base (respeitando headroom/cap/bordas)
+        $half = max($baseHalf + $topGoal, $baseHalf);
+        $half = min($half, $capHalf, $halfByEdges);
+
+        // centro desejado (aplicar viés + deslocamentos dx/dy relativos à FACE)
+        $cxDesired = $cx + $dx * $faceSide;
+
+        // headroom: (cy' - half) <= (y - topGoal)
+        $maxCyForTopGoal = $y - $topGoal + $half;
+        $cyDesired = min($cy - $biasPix + ($dy * $faceSide), $maxCyForTopGoal);
+
+        // clamping do centro para ficar dentro da imagem
+        $cxLow  = $half;
+        $cxHigh = $imgW - $half;
+        $cyLow  = $half;
+        $cyHigh = $imgH - $half;
+
+        $cxNew = max($cxLow, min($cxDesired, $cxHigh));
+        $cyNew = max($cyLow, min($cyDesired, $cyHigh));
+
+        // coordenadas finais
+        $side = 2.0 * $half;
+        $x1   = $cxNew - $half;
+        $y1   = $cyNew - $half;
+
+        // proteção final
+        $x1 = max(0.0, min($x1, $imgW - $side));
+        $y1 = max(0.0, min($y1, $imgH - $side));
+
+        return $img->crop(
+            (int) round($side),
+            (int) round($side),
+            (int) round($x1),
+            (int) round($y1)
+        );
+    }
+
+    /**
+     * Encoda + (opcional) redimensiona e devolve base64/data-uri.
+     */
+    private function encodeOut(
+        ImageInterface $img,
+        ?int $resize,
+        string $format,
+        int $quality,
+        bool $dataUri
+    ): string {
+        if ($resize !== null) {
+            $img = $img->scaleDown($resize, $resize);
+        }
+        [$encoded, $mime] = $this->encodeImage($img, $format, $quality);
+        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string) $encoded;
+        $b64 = base64_encode($bin);
+        return $dataUri ? ("{$mime},{$b64}") : $b64;
+    }
+
 }
