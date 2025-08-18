@@ -891,12 +891,13 @@ class FaceDetection
      * @return string            Base64 (com ou sem data-uri)
      * @throws \Exception
      */
-    public function toBase64WithMargin40(
+    public function toBase64WithMargin(
         string $input,
         ?int $resize = 512,
         string $format = 'jpg',
         int $quality = 95,
-        bool $dataUri = true
+        bool $dataUri = true,
+        $marginFator = 0.40
     ): string {
         // garante bounds
         if (!$this->found || !$this->bounds) {
@@ -907,7 +908,7 @@ class FaceDetection
         }
 
         // recorta com margem fixa de +40%
-        $img = $this->cropWithMargin((clone $this->image), 0.40);
+        $img = $this->cropWithMargin((clone $this->image), $marginFator);
 
         // resize opcional
         if ($resize !== null) {
