@@ -888,6 +888,7 @@ class FaceDetection
      * @param string   $format   'jpg'|'png'|'webp'
      * @param int      $quality  Qualidade (JPG/WEBP)
      * @param bool     $dataUri  true para retornar "data:image/...;base64,XXXX"
+     * @param float    $marginFator Fator de margem (padrão: 0.40, 40% do lado da face)
      * @return string            Base64 (com ou sem data-uri)
      * @throws \Exception
      */
