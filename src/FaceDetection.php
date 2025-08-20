@@ -932,11 +932,14 @@ class FaceDetection
      * - Faz auto-orientação por EXIF e tenta rotações [0, 90, 270, 180].
      * - Se houver rotação aplicada (além do EXIF), retorna também
      *   a imagem rotacionada em base64 na chave 'imagemRotateBase64'.
+     * - Se $marginPercent (1..100) for informado, expande o boundary
+     *   proporcionalmente, com “clamping” para não sair da imagem.
      *
-     * @param string $input
+     * @param string   $input
+     * @param int|null $marginPercent Percentual de margem extra (1..100). Null = sem margem extra.
      * @return array{x:float,y:float,w:float,h:float,imagemRotateBase64?:string}|null
      */
-    public function getBoundary(string $input): ?array
+    public function getBoundary(string $input, ?int $marginPercent = null): ?array
     {
         // carrega imagem
         $base = $this->driver->read($this->normalizeInput($input));
@@ -956,7 +959,45 @@ class FaceDetection
             // detector retorna quadrado; mantém compatível
             $bounds['h'] = $bounds['w'];
 
-            // retorno básico
+            // aplica margem extra se solicitado
+            if ($marginPercent !== null) {
+                $p = max(1, min(100, (int)$marginPercent)) / 100.0; // 1..100 -> 0.01..1.00
+
+                $x = (float)$bounds['x'];
+                $y = (float)$bounds['y'];
+                $w = (float)$bounds['w'];
+                $h = (float)$bounds['h'];
+
+                // expansão proporcional (simétrica nas 4 direções)
+                $addW = $w * $p;
+                $addH = $h * $p;
+
+                $nx = $x - $addW / 2.0;
+                $ny = $y - $addH / 2.0;
+                $nw = $w + $addW;
+                $nh = $h + $addH;
+
+                // clamping para não sair da imagem
+                $imgW = $img->width();
+                $imgH = $img->height();
+
+                if ($nx < 0) { $nw += $nx; $nx = 0.0; }
+                if ($ny < 0) { $nh += $ny; $ny = 0.0; }
+
+                if ($nx + $nw > $imgW) { $nw = $imgW - $nx; }
+                if ($ny + $nh > $imgH) { $nh = $imgH - $ny; }
+
+                // evita valores inválidos após o clamp
+                $nw = max(1.0, $nw);
+                $nh = max(1.0, $nh);
+
+                $bounds['x'] = $nx;
+                $bounds['y'] = $ny;
+                $bounds['w'] = $nw;
+                $bounds['h'] = $nh;
+            }
+
+            // retorno básico (arredondado como no extract())
             $result = [
                 'x' => round((float) $bounds['x'], 1),
                 'y' => round((float) $bounds['y'], 1),
