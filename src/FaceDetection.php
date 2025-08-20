@@ -924,17 +924,17 @@ class FaceDetection
         return $dataUri ? ("{$mime},{$b64}") : $b64;
     }
 
-
-
     //** MÉTODOS AUXILIARES PARA INVESTIGAÇÃO DE FUNCIONAMENTO DO PROCESSO */
 
     /**
      * Retorna apenas o boundary da face detectada (x, y, w, h) ou null.
      * - Aceita caminho de arquivo ou base64 (com/sem data-uri).
      * - Faz auto-orientação por EXIF e tenta rotações [0, 90, 270, 180].
+     * - Se houver rotação aplicada (além do EXIF), retorna também
+     *   a imagem rotacionada em base64 na chave 'imagemRotateBase64'.
      *
      * @param string $input
-     * @return array{x:float,y:float,w:float,h:float}|null
+     * @return array{x:float,y:float,w:float,h:float,imagemRotateBase64?:string}|null
      */
     public function getBoundary(string $input): ?array
     {
@@ -956,16 +956,25 @@ class FaceDetection
             // detector retorna quadrado; mantém compatível
             $bounds['h'] = $bounds['w'];
 
-            // arredonda como no extract()
-            return [
+            // retorno básico
+            $result = [
                 'x' => round((float) $bounds['x'], 1),
                 'y' => round((float) $bounds['y'], 1),
                 'w' => round((float) $bounds['w'], 1),
                 'h' => round((float) $bounds['h'], 1),
             ];
+
+            // se houve rotação além de 0°, adiciona base64 da imagem rotacionada
+            if ($angle !== 0) {
+                $result['imagemRotateBase64'] = 'data:image/jpeg;base64,' .
+                    base64_encode((string) $img->toJpeg(90));
+            }
+
+            return $result;
         }
 
         return null;
     }
+
 
 }
