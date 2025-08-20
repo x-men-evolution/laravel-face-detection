@@ -977,4 +977,70 @@ class FaceDetection
     }
 
 
+    /**
+     * Recorta a imagem com base em um boundary e retorna em Base64.
+     *
+     * @param array  $boundary  ['x'=>float,'y'=>float,'w'=>float,'h'=>float, 'imagemRotateBase64'?:string]
+     * @param string $input     data-uri, base64 cru ou caminho de arquivo
+     * @param string $format    'jpg'|'png'|'webp'
+     * @param int    $quality   qualidade (JPG/WEBP)
+     * @param bool   $dataUri   true => retorna "data:image/...;base64,...."
+     *
+     * @return string Base64 (data-uri se $dataUri=true)
+     *
+     * @throws \Exception
+     */
+    public function cropByBoundaryToBase64(
+        array $boundary,
+        string $input,
+        string $format = 'jpg',
+        int $quality = 95,
+        bool $dataUri = true
+    ): string {
+        
+        // 1) Se o boundary já trouxe a imagem rotacionada, use-a para manter o mesmo referencial
+        $source = $boundary['imagemRotateBase64'] ?? $input;
+
+        // 2) Carrega imagem (sem aplicar orient extra; boundary já está nesse referencial)
+        $img = $this->driver->read($this->normalizeInput($source));
+
+        // 3) Lê e normaliza o retângulo
+        $x = isset($boundary['x']) ? (float)$boundary['x'] : 0.0;
+        $y = isset($boundary['y']) ? (float)$boundary['y'] : 0.0;
+        $w = isset($boundary['w']) ? (float)$boundary['w'] : 0.0;
+        $h = isset($boundary['h']) ? (float)$boundary['h'] : (float)$w; // compatível com detector (quadrado)
+
+        if ($w <= 0 || $h <= 0) {
+            throw new \Exception('Boundary inválido: largura/altura não podem ser <= 0.');
+        }
+
+        // 4) Clamping para não sair da imagem
+        $imgW = $img->width();
+        $imgH = $img->height();
+
+        // força X/Y dentro
+        $x = max(0.0, min($x, (float)($imgW - 1)));
+        $y = max(0.0, min($y, (float)($imgH - 1)));
+
+        // ajusta W/H se ultrapassar borda
+        if ($x + $w > $imgW) { $w = (float)($imgW - $x); }
+        if ($y + $h > $imgH) { $h = (float)($imgH - $y); }
+
+        // arredonda para inteiros de corte
+        $cropW = max(1, (int)round($w));
+        $cropH = max(1, (int)round($h));
+        $cropX = max(0, (int)round($x));
+        $cropY = max(0, (int)round($y));
+
+        // 5) Aplica o crop
+        $out = (clone $img)->crop($cropW, $cropH, $cropX, $cropY);
+
+        // 6) Encode + retorno em base64 (data-uri opcional)
+        [$encoded, $mime] = $this->encodeImage($out, $format, $quality);
+        $bin = method_exists($encoded, 'toString') ? $encoded->toString() : (string)$encoded;
+        $b64 = base64_encode($bin);
+
+        return $dataUri ? ("{$mime},{$b64}") : $b64;
+    }
+
 }
