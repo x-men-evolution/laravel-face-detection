@@ -924,4 +924,48 @@ class FaceDetection
         return $dataUri ? ("{$mime},{$b64}") : $b64;
     }
 
+
+
+    //** MÉTODOS AUXILIARES PARA INVESTIGAÇÃO DE FUNCIONAMENTO DO PROCESSO */
+
+    /**
+     * Retorna apenas o boundary da face detectada (x, y, w, h) ou null.
+     * - Aceita caminho de arquivo ou base64 (com/sem data-uri).
+     * - Faz auto-orientação por EXIF e tenta rotações [0, 90, 270, 180].
+     *
+     * @param string $input
+     * @return array{x:float,y:float,w:float,h:float}|null
+     */
+    public function getBoundary(string $input): ?array
+    {
+        // carrega imagem
+        $base = $this->driver->read($this->normalizeInput($input));
+        if (method_exists($base, 'orient')) {
+            $base = $base->orient(); // ajusta rotação via EXIF
+        }
+
+        // tenta múltiplas rotações
+        foreach ([0, 90, 270, 180] as $angle) {
+            $img = $angle === 0 ? (clone $base) : (clone $base)->rotate($angle);
+
+            $bounds = $this->detectBoundsFromImage($img);
+            if (!$bounds || ($bounds['w'] ?? 0) <= 0) {
+                continue;
+            }
+
+            // detector retorna quadrado; mantém compatível
+            $bounds['h'] = $bounds['w'];
+
+            // arredonda como no extract()
+            return [
+                'x' => round((float) $bounds['x'], 1),
+                'y' => round((float) $bounds['y'], 1),
+                'w' => round((float) $bounds['w'], 1),
+                'h' => round((float) $bounds['h'], 1),
+            ];
+        }
+
+        return null;
+    }
+
 }
